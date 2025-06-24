@@ -1,5 +1,7 @@
 .gitnore
 *.log
 
+weight/
+output/
 dataset/
 __pycache__/
