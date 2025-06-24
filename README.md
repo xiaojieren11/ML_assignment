@@ -1,1 +1,1 @@
-A pro for ml-lesson
+A project for ml-lesson
