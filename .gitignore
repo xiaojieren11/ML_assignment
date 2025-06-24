@@ -1,4 +1,4 @@
-.gitnore
+.gitignore
 *.log
 
 weight/
