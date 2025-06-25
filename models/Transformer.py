@@ -23,13 +23,15 @@ class TransformerEncoder(nn.Module):
 class TransformerModel(nn.Module):
     def __init__(self, input_size, embed_dim, dense_dim, num_heads, output_size):
         super(TransformerModel, self).__init__()
+        self.embedding = nn.Linear(input_size, embed_dim)  # 添加线性层进行维度转换
         self.transformer_encoder = TransformerEncoder(embed_dim, dense_dim, num_heads)
         self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
         self.dropout = nn.Dropout(0.5)
-        self.linear = nn.Linear(input_size, output_size)
+        self.linear = nn.Linear(embed_dim, output_size)  # 修改线性层的输入维度
 
     def forward(self, inputs):
-        x = self.transformer_encoder(inputs)
+        x = self.embedding(inputs)  # 通过线性层进行维度转换
+        x = self.transformer_encoder(x)
         x = self.global_avg_pool(x.transpose(1, 2)).squeeze(-1)
         x = self.dropout(x)
         x = self.linear(x)
