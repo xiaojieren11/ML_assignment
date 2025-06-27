@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 import torch
@@ -9,8 +8,9 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import os
 from models.LSTM import LSTMModel  # 导入 LSTM 模型
-from models.Transformer import TransformerModel  # 导入 Transformer 模型
-from config import get_parser  # 导入 Config 类
+from models.Transformer import TransformerModel 
+from models.ours import OursModel
+from config import get_parser  
 import datetime
 import untils
 from torch.utils.tensorboard import SummaryWriter
@@ -27,7 +27,43 @@ def sliding_window(dataset, time_steps=1, predict_future=False):
             y.append(dataset[i, 0])
     return np.array(X), np.array(y)
 
+def model_train(model, train_loader, criterion, optimizer, num_epochs, num_steps, logger, writer):
+    model.train()
+    start_time = datetime.datetime.now()
+    global_step = 0
+    for epoch in range(num_epochs):
+        for idx, (X_batch, y_batch) in enumerate(train_loader):
+            optimizer.zero_grad()
+            outputs = model(X_batch)
+            loss = criterion(outputs, y_batch)
+            loss.backward()
+            optimizer.step()
 
+            # 记录训练日志
+            now = datetime.datetime.now()
+            time_diff = now - start_time
+            etas = time_diff.total_seconds() / (epoch * num_steps + idx + 1) * (num_epochs * num_steps - epoch * num_steps - idx - 1)
+            print(
+                f'Train: [{epoch+1}/{num_epochs}][{idx+1}/{num_steps}]\t'
+                f'eta {datetime.timedelta(seconds=int(etas))}\t'
+                f'loss {loss.item():.4f}\t'
+            )
+            logger.info(
+                f'Train: [{epoch+1}/{num_epochs}][{idx+1}/{num_steps}]\t'
+                f'eta {datetime.timedelta(seconds=int(etas))}\t'
+                f'loss {loss.item():.4f}\t'
+            )
+
+            # 写入 TensorBoard
+            writer.add_scalar('Loss/train', loss.item(), global_step)
+            global_step += 1
+
+        writer.close()
+        weight_dir = './weight'
+        if not os.path.exists(weight_dir):
+            os.makedirs(weight_dir)
+        torch.save(model.state_dict(), os.path.join(weight_dir, f'{args.model.lower()}_model.pth'))
+    
 def main(args):
     # 1. 数据准备
     # 1.1 读取数据
@@ -43,13 +79,15 @@ def main(args):
     train_size = args.train_size  # 训练集取最后90天
     train_data = train_data[-train_size:]
 
-    test_size = args.predict_days
+    TIME_STEPS = args.time_steps
+
+    test_size = args.predict_days + TIME_STEPS
     test_data = test_data[:test_size]
 
     train_scaled = scaler.fit_transform(train_data[features])
     test_scaled = scaler.transform(test_data[features])
 
-    TIME_STEPS = args.time_steps
+    
     X_train, y_train = sliding_window(train_scaled, TIME_STEPS)
     # 创建测试集时，不进行滑动窗口，保留所有数据用于预测
     X_test, y_test = sliding_window(test_scaled, TIME_STEPS, predict_future=True)
@@ -81,7 +119,7 @@ def main(args):
         raise ValueError("Invalid model type. Choose 'LSTM' or 'Transformer'.")
 
     # 7. 结果保存
-    output_dir = os.path.join('./output', f'{args.model.lower()}_results')
+    output_dir = os.path.join('./output', f'{args.model.lower()}1_results')
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -104,43 +142,7 @@ def main(args):
         # 4.1 模型训练
         num_epochs = args.num_epochs
         num_steps = len(train_loader)
-        model.train()
-        start_time = datetime.datetime.now()
-        global_step = 0
-        for epoch in range(num_epochs):
-            for idx, (X_batch, y_batch) in enumerate(train_loader):
-                optimizer.zero_grad()
-                outputs = model(X_batch)
-                loss = criterion(outputs, y_batch)
-                loss.backward()
-                optimizer.step()
-
-                # 记录训练日志
-                now = datetime.datetime.now()
-                time_diff = now - start_time
-                etas = time_diff.total_seconds() / (epoch * num_steps + idx + 1) * (num_epochs * num_steps - epoch * num_steps - idx - 1)
-                print(
-                    f'Train: [{epoch+1}/{num_epochs}][{idx+1}/{num_steps}]\t'
-                    f'eta {datetime.timedelta(seconds=int(etas))}\t'
-                    f'loss {loss.item():.4f}\t'
-                )
-                logger.info(
-                    f'Train: [{epoch+1}/{num_epochs}][{idx+1}/{num_steps}]\t'
-                    f'eta {datetime.timedelta(seconds=int(etas))}\t'
-                    f'loss {loss.item():.4f}\t'
-                )
-
-                # 写入 TensorBoard
-                writer.add_scalar('Loss/train', loss.item(), global_step)
-                global_step += 1
-
-        writer.close()
-
-        # 8. 保存模型
-        weight_dir = './weight'
-        if not os.path.exists(weight_dir):
-            os.makedirs(weight_dir)
-        torch.save(model.state_dict(), os.path.join(weight_dir, f'{args.model.lower()}_model.pth'))
+        model_train(model, train_loader, criterion, optimizer, num_epochs, num_steps, logger, writer)
 
     # 4.3 模型预测
     # model.eval()
@@ -233,7 +235,6 @@ def main(args):
     # -------------------------------
     # 5.3 评估指标 —— 确保用到了 y_test_original
     # -------------------------------
-    from sklearn.metrics import mean_squared_error, mean_absolute_error
     MSE = mean_squared_error(y_test_original, predictions)
     MAE = mean_absolute_error(y_test_original, predictions)
     print(f'{args.model} (Test {args.predict_days}) → MSE: {MSE:.4f}, MAE: {MAE:.4f}')
@@ -242,7 +243,6 @@ def main(args):
     # -------------------------------
     # 5.4 保存到 CSV —— 同时保存真值和预测值
     # -------------------------------
-
     df_res = pd.DataFrame({
         'Actual': y_test_original,
         'Predicted': predictions
@@ -253,17 +253,7 @@ def main(args):
     # -------------------------------
     # 6. 结果可视化 —— 用 y_test_original 画出真值曲线
     # -------------------------------
-    import matplotlib.pyplot as plt
-    plt.figure(figsize=(12, 6))
-    plt.plot(y_test_original, label='Actual')  # 真值
-    plt.plot(predictions, label=f'{args.model} Predicted')  # 预测
-    plt.title(f'{args.model} (Test {args.predict_days}): Actual vs Predicted')
-    plt.xlabel('Time Steps')
-    plt.ylabel('Global Active Power')
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f'{args.model.lower()}_plot_{args.predict_days}.png'))
-    plt.show()
+    untils.plot(y_test_original, predictions, args, output_dir)
 
 
 if __name__ == "__main__":

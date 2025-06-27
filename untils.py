@@ -1,5 +1,6 @@
 import logging
 import os
+import matplotlib.pyplot as plt
 
 def create_logger(log_dir):
     """创建一个logger，并将日志保存到指定目录下的文件中"""
@@ -19,3 +20,15 @@ def create_logger(log_dir):
     logger.addHandler(file_handler)
 
     return logger
+
+def plot(y_test_original, predictions, args, output_dir):
+    plt.figure(figsize=(12, 6))
+    plt.plot(y_test_original, label='Actual')  # 真值
+    plt.plot(predictions, label=f'{args.model} Predicted')  # 预测
+    plt.title(f'{args.model} (Test {args.predict_days}): Actual vs Predicted')
+    plt.xlabel('Time Steps')
+    plt.ylabel('Global Active Power')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, f'{args.model.lower()}_plot_{args.predict_days}.png'))
+    plt.show()
