@@ -18,7 +18,7 @@ def get_parser():
     parser.add_argument('--eval_only', action='store_true', help='是否加载模型')
     parser.add_argument('--model_path', type=str, help='模型路径')
     parser.add_argument('--model', type=str, default='LSTM', help='选择模型 (LSTM, Transformer)')
-    parser.add_argument('--predict_days', type=int, default=90, help='预测天数')
+    parser.add_argument('--predict_days', type=int, default=60, help='预测天数')
 
     args = parser.parse_args()
     return args

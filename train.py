@@ -8,33 +8,14 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import os
-import argparse
 from models.LSTM import LSTMModel  # 导入 LSTM 模型
 from models.Transformer import TransformerModel  # 导入 Transformer 模型
 from config import get_parser  # 导入 Config 类
-import logging
 import datetime
+import untils
+from torch.utils.tensorboard import SummaryWriter
 
-def create_logger(log_dir):
-    """创建一个logger，并将日志保存到指定目录下的文件中"""
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
-
-    # 创建文件处理器，用于将日志写入文件
-    log_file = os.path.join(log_dir, 'Log.log')
-    file_handler = logging.FileHandler(log_file, mode='w')
-    file_handler.setLevel(logging.INFO)
-
-    # 创建日志格式器
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-
-    # 将文件处理器添加到logger
-    logger.addHandler(file_handler)
-
-    return logger
-
-def create_dataset(dataset, time_steps=1, predict_future=False):
+def sliding_window(dataset, time_steps=1, predict_future=False):
     X, y = [], []
     if predict_future:
         for i in range(len(dataset) - time_steps):
@@ -45,15 +26,6 @@ def create_dataset(dataset, time_steps=1, predict_future=False):
             X.append(dataset[i-time_steps:i])
             y.append(dataset[i, 0])
     return np.array(X), np.array(y)
-
-def predict_full_sequence(model, data, time_steps):
-    predictions = []
-    current_input = data[-time_steps:]   # 使用最后的时间步作为输入
-    for _ in range(time_steps):
-        prediction = model(torch.tensor(current_input, dtype=torch.float32).unsqueeze(1))
-        predictions.append(prediction.item())
-        current_input = np.append(current_input[1:], prediction.item())  # 滑动窗口更新
-    return predictions
 
 
 def main(args):
@@ -78,9 +50,9 @@ def main(args):
     test_scaled = scaler.transform(test_data[features])
 
     TIME_STEPS = args.time_steps
-    X_train, y_train = create_dataset(train_scaled, TIME_STEPS)
+    X_train, y_train = sliding_window(train_scaled, TIME_STEPS)
     # 创建测试集时，不进行滑动窗口，保留所有数据用于预测
-    X_test, y_test = create_dataset(test_scaled, TIME_STEPS, predict_future=True)
+    X_test, y_test = sliding_window(test_scaled, TIME_STEPS, predict_future=True)
 
     # 1.6 转换为 PyTorch 张量
     X_train = torch.tensor(X_train, dtype=torch.float32)
@@ -114,7 +86,10 @@ def main(args):
         os.makedirs(output_dir)
 
     # 创建logger
-    logger = create_logger(output_dir)
+    logger = untils.create_logger(output_dir)
+
+    # 创建 TensorBoard writer
+    writer = SummaryWriter(log_dir=os.path.join(output_dir, 'runs'))
 
     # 4. 模型训练与预测
     # 4.0 定义损失函数和优化器
@@ -131,6 +106,7 @@ def main(args):
         num_steps = len(train_loader)
         model.train()
         start_time = datetime.datetime.now()
+        global_step = 0
         for epoch in range(num_epochs):
             for idx, (X_batch, y_batch) in enumerate(train_loader):
                 optimizer.zero_grad()
@@ -154,6 +130,12 @@ def main(args):
                     f'loss {loss.item():.4f}\t'
                 )
 
+                # 写入 TensorBoard
+                writer.add_scalar('Loss/train', loss.item(), global_step)
+                global_step += 1
+
+        writer.close()
+
         # 8. 保存模型
         weight_dir = './weight'
         if not os.path.exists(weight_dir):
@@ -161,47 +143,128 @@ def main(args):
         torch.save(model.state_dict(), os.path.join(weight_dir, f'{args.model.lower()}_model.pth'))
 
     # 4.3 模型预测
+    # model.eval()
+    # with torch.no_grad():
+    #     predictions = []
+    #     input_seq = torch.tensor(test_scaled[:TIME_STEPS], dtype=torch.float32).unsqueeze(0)
+    #     num_features = input_seq.shape[2]
+    #     TIME_STEPS = input_seq.shape[1]
+    #     total_steps = len(test_scaled)
+    #     steps = 0
+    #     while len(predictions) < total_steps:
+    #         output = model(input_seq)
+    #         predictions.append(output.item())
+    #         if len(predictions) == total_steps:
+    #             break
+    #         # 构造新输入：[1, 1, num_features]
+    #         if steps + TIME_STEPS < total_steps:
+    #             # 用真实特征
+    #             next_input = torch.tensor(test_scaled[steps + TIME_STEPS], dtype=torch.float32).reshape(1, 1, num_features)
+    #         else:
+    #             # 用最后一个真实特征填充
+    #             next_input = torch.tensor(test_scaled[-1], dtype=torch.float32).reshape(1, 1, num_features)
+    #         # 用预测值替换第一个特征
+    #         next_input[0, 0, 0] = output.item()
+    #         input_seq = torch.cat((input_seq, next_input), dim=1)[:, -TIME_STEPS:, :]
+    #         steps += 1
+    #     predictions = np.array(predictions)
+
+    # 4.3 模型预测 —— 直接用滑动窗口批量预测
     model.eval()
     with torch.no_grad():
-        # 使用整个测试集进行预测
-        X_test_tensor = torch.tensor(test_scaled[TIME_STEPS:], dtype=torch.float32).unsqueeze(1)
-        predictions = model(X_test_tensor).numpy()
+        # X_test 已经是 (N, TIME_STEPS, num_features)
+        X_test_tensor = torch.tensor(X_test, dtype=torch.float32)  # 👉 这里用 sliding_window 得到的 X_test
+        preds_scaled = model(X_test_tensor).squeeze(-1).cpu().numpy()  # (N,)
 
-    # 5. 结果评估
     # 5.1 逆缩放
-    # 创建与测试集大小相同的全零数组
-    dummy_array = np.zeros((len(test_scaled) - TIME_STEPS, X_train.shape[2] - 1))
+    # 因为 scaler.fit_transform 是对所有 feature 做的，这里我们只预测第 0 列，其它列填 0
+    dummy = np.zeros((len(preds_scaled), X_train.shape[2] - 1))
+    pred_full = np.concatenate([preds_scaled.reshape(-1, 1), dummy], axis=1)
+    predictions = scaler.inverse_transform(pred_full)[:, 0]
 
-    # 将预测结果和全零数组拼接
-    predictions_full = np.concatenate((predictions, dummy_array), axis=1)
+    # 真值也要对齐：滑窗后 y_test 对应的是 test_data 从 TIME_STEPS 开始的部分
+    y_test_original = test_data['Global_active_power'].values[TIME_STEPS:]
 
-    # 逆缩放
-    predictions = scaler.inverse_transform(predictions_full)[:, 0]
+    # # 5. 结果评估
+    # # 5.1 逆缩放
+    # dummy_array = np.zeros((len(predictions), X_train.shape[2] - 1))
+    # predictions_full = np.concatenate((predictions.reshape(-1,1), dummy_array), axis=1)
+    # predictions = scaler.inverse_transform(predictions_full)[:, 0]
+    #
+    # # 获取原始测试集的 Global_active_power
+    # y_test_original = test_data['Global_active_power'].values
+    #
+    # # 5.2 计算 MSE 和 MAE
+    # MSE = mean_squared_error(y_test_original, predictions)
+    # MAE = mean_absolute_error(y_test_original, predictions)
+    # print(f'{args.model} (Test {args.predict_days}) MSE: {MSE}, MAE: {MAE}')
+    # logger.info(f'{args.model} (Test {args.predict_days}) MSE: {MSE}, MAE: {MAE}')
+    #
+    # # 6. 结果可视化
+    # plt.figure(figsize=(12, 6))
+    # plt.plot(y_test_original, label='Actual')
+    # plt.plot(predictions, label=f'{args.model} Predicted')
+    # plt.title(f'{args.model} (Test {args.predict_days}): Actual vs Predicted Global Active Power')
+    # plt.xlabel('Time Steps')
+    # plt.ylabel('Global Active Power')
+    # plt.legend()
+    #
+    # # 保存预测值和真实值
+    # lstm_results = np.column_stack((y_test_original, predictions))
+    # output_file_name = f'{args.model.lower()}_predictions_{args.predict_days}.csv'
+    # np.savetxt(os.path.join(output_dir, output_file_name), lstm_results, delimiter=',', header='Actual,Predicted', comments='')
+    # plt.savefig(os.path.join(output_dir, f'{args.model.lower()}_predictions_{args.predict_days}.png'))
+    # plt.close()
 
-    # 获取原始测试集的 Global_active_power
-    y_test_original = test_data['Global_active_power'][TIME_STEPS:].values
+    # -------------------------------
+    # 5.1 逆缩放 —— 得到 predictions（预测值）
+    # -------------------------------
+    dummy = np.zeros((len(preds_scaled), X_train.shape[2] - 1))
+    pred_full = np.concatenate([preds_scaled.reshape(-1, 1), dummy], axis=1)
+    predictions = scaler.inverse_transform(pred_full)[:, 0]  # shape=(N,)
 
-    # 5.2 计算 MSE 和 MAE
+    # -------------------------------
+    # 5.2 真值对齐 —— 得到 y_test_original
+    # -------------------------------
+    # test_data 是原始未归一化的 DataFrame
+    # 我们前面用 sliding_window 删掉了前 TIME_STEPS 个值
+    y_test_original = test_data['Global_active_power'].values[TIME_STEPS:]  # shape=(N,)
+
+    # -------------------------------
+    # 5.3 评估指标 —— 确保用到了 y_test_original
+    # -------------------------------
+    from sklearn.metrics import mean_squared_error, mean_absolute_error
     MSE = mean_squared_error(y_test_original, predictions)
     MAE = mean_absolute_error(y_test_original, predictions)
-    print(f'{args.model} (Test {args.predict_days}) MSE: {MSE}, MAE: {MAE}')
-    logger.info(f'{args.model} (Test {args.predict_days}) MSE: {MSE}, MAE: {MAE}')
+    print(f'{args.model} (Test {args.predict_days}) → MSE: {MSE:.4f}, MAE: {MAE:.4f}')
+    logger.info(f'{args.model} (Test {args.predict_days}) → MSE: {MSE:.4f}, MAE: {MAE:.4f}')
 
-    # 6. 结果可视化
+    # -------------------------------
+    # 5.4 保存到 CSV —— 同时保存真值和预测值
+    # -------------------------------
+
+    df_res = pd.DataFrame({
+        'Actual': y_test_original,
+        'Predicted': predictions
+    })
+    output_file = os.path.join(output_dir, f'{args.model.lower()}_results_{args.predict_days}.csv')
+    df_res.to_csv(output_file, index=False)
+
+    # -------------------------------
+    # 6. 结果可视化 —— 用 y_test_original 画出真值曲线
+    # -------------------------------
+    import matplotlib.pyplot as plt
     plt.figure(figsize=(12, 6))
-    plt.plot(y_test_original, label='Actual')
-    plt.plot(predictions, label=f'{args.model} Predicted')
-    plt.title(f'{args.model} (Test {args.predict_days}): Actual vs Predicted Global Active Power')
+    plt.plot(y_test_original, label='Actual')  # 真值
+    plt.plot(predictions, label=f'{args.model} Predicted')  # 预测
+    plt.title(f'{args.model} (Test {args.predict_days}): Actual vs Predicted')
     plt.xlabel('Time Steps')
     plt.ylabel('Global Active Power')
     plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, f'{args.model.lower()}_plot_{args.predict_days}.png'))
+    plt.show()
 
-    # 保存预测值和真实值
-    lstm_results = np.column_stack((y_test_original, predictions))
-    output_file_name = f'{args.model.lower()}_predictions_{args.predict_days}.csv'
-    np.savetxt(os.path.join(output_dir, output_file_name), lstm_results, delimiter=',', header='Actual,Predicted', comments='')
-    plt.savefig(os.path.join(output_dir, f'{args.model.lower()}_predictions_{args.predict_days}.png'))
-    plt.close()
 
 if __name__ == "__main__":
     args = get_parser()
