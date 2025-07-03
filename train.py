@@ -10,6 +10,7 @@ import os
 from models.LSTM import LSTMModel  # 导入 LSTM 模型
 from models.Transformer import TransformerModel 
 from models.ours import OursModel
+from models.ours1 import CNNTransformer  # 导入 Ours1 模型
 from config import get_parser  
 import datetime
 import untils
@@ -27,12 +28,47 @@ def sliding_window(dataset, time_steps=1, predict_future=False):
             y.append(dataset[i, 0])
     return np.array(X), np.array(y)
 
-def model_train(model, train_loader, criterion, optimizer, num_epochs, num_steps, logger, writer):
+def create_model(model_type, input_size, hidden_size, output_size, embed_dim=None, dense_dim=None, num_heads=None):
+    if args.model == 'LSTM':
+        model = LSTMModel(input_size, hidden_size, output_size)
+    elif args.model == 'Transformer':
+        embed_dim = args.embed_dim
+        dense_dim = args.dense_dim
+        num_heads = args.num_heads
+        model = TransformerModel(input_size, embed_dim, dense_dim, num_heads, output_size)
+    elif args.model == 'Ours':
+        model = OursModel(
+            input_size=input_size,  # 您数据中的总特征数 (e.g., 13)
+            embed_dim=128,  # 示例值
+            dense_dim=256,  # 示例值
+            num_heads=8,  # 示例值
+            output_size=1,  # 因为您的y_batch是(B,1)，所以这里必须是1
+            n_layers=3,  # 示例值
+            dropout=0.1
+        )
+    elif args.model == 'Ours1':
+        model = CNNTransformer(
+            input_dim=input_size,  # 输入特征数
+            model_dim=128,  # 模型维度
+            num_heads=8,  # 注意力头数
+            num_layers=3,  # Transformer 层数
+            output_dim=output_size,  # 输出维度  
+        )
+    else:
+        raise ValueError("Invalid model type. Choose 'LSTM' or 'Transformer'.")
+    
+    return model
+
+def model_train(model, train_loader, criterion, optimizer, num_epochs, num_steps, logger, writer, device):
+    print(next(model.parameters()).device)
     model.train()
     start_time = datetime.datetime.now()
     global_step = 0
+    #TODO 保留效果最好的一次模型的结果
     for epoch in range(num_epochs):
         for idx, (X_batch, y_batch) in enumerate(train_loader):
+            X_batch = X_batch.to(device)
+            y_batch = y_batch.to(device)
             optimizer.zero_grad()
             outputs = model(X_batch)
             loss = criterion(outputs, y_batch)
@@ -65,6 +101,9 @@ def model_train(model, train_loader, criterion, optimizer, num_epochs, num_steps
         torch.save(model.state_dict(), os.path.join(weight_dir, f'{args.model.lower()}_model.pth'))
     
 def main(args):
+    # 0. 设备选择
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'Using device: {device}')
     # 1. 数据准备
     # 1.1 读取数据
     train_data = pd.read_csv('./dataset/train_processed.csv', index_col='DateTime', parse_dates=True)
@@ -80,7 +119,7 @@ def main(args):
     train_data = train_data[-train_size:]
 
     TIME_STEPS = args.time_steps
-
+    #TODO 解决 test_data 的长度问题
     test_size = args.predict_days + TIME_STEPS
     test_data = test_data[:test_size]
 
@@ -89,14 +128,16 @@ def main(args):
 
     
     X_train, y_train = sliding_window(train_scaled, TIME_STEPS)
+    print(f'X_train shape: {X_train.shape}, y_train shape: {y_train.shape}')
     # 创建测试集时，不进行滑动窗口，保留所有数据用于预测
     X_test, y_test = sliding_window(test_scaled, TIME_STEPS, predict_future=True)
+    print(f'X_test shape: {X_test.shape}, y_test shape: {y_test.shape}')
 
     # 1.6 转换为 PyTorch 张量
-    X_train = torch.tensor(X_train, dtype=torch.float32)
-    y_train = torch.tensor(y_train, dtype=torch.float32).reshape(-1, 1)
-    X_test = torch.tensor(X_test, dtype=torch.float32)
-    y_test = torch.tensor(y_test, dtype=torch.float32).reshape(-1, 1)
+    X_train = torch.tensor(X_train, dtype=torch.float32).to(device)
+    y_train = torch.tensor(y_train, dtype=torch.float32).reshape(-1, 1).to(device)
+    X_test = torch.tensor(X_test, dtype=torch.float32).to(device)
+    y_test = torch.tensor(y_test, dtype=torch.float32).reshape(-1, 1).to(device)
 
     # 1.7 创建数据加载器
     batch_size = args.batch_size
@@ -108,15 +149,15 @@ def main(args):
     hidden_size = args.hidden_size
     output_size = args.output_size
 
-    if args.model == 'LSTM':
-        model = LSTMModel(input_size, hidden_size, output_size)
-    elif args.model == 'Transformer':
-        embed_dim = args.embed_dim
-        dense_dim = args.dense_dim
-        num_heads = args.num_heads
-        model = TransformerModel(input_size, embed_dim, dense_dim, num_heads, output_size)
-    else:
-        raise ValueError("Invalid model type. Choose 'LSTM' or 'Transformer'.")
+    model = create_model(
+        model_type=args.model,
+        input_size=input_size,
+        hidden_size=hidden_size,
+        output_size=output_size,
+        embed_dim=args.embed_dim,
+        dense_dim=args.dense_dim,
+        num_heads=args.num_heads
+    ).to(device)
 
     # 7. 结果保存
     output_dir = os.path.join('./output', f'{args.model.lower()}1_results')
@@ -142,41 +183,13 @@ def main(args):
         # 4.1 模型训练
         num_epochs = args.num_epochs
         num_steps = len(train_loader)
-        model_train(model, train_loader, criterion, optimizer, num_epochs, num_steps, logger, writer)
-
-    # 4.3 模型预测
-    # model.eval()
-    # with torch.no_grad():
-    #     predictions = []
-    #     input_seq = torch.tensor(test_scaled[:TIME_STEPS], dtype=torch.float32).unsqueeze(0)
-    #     num_features = input_seq.shape[2]
-    #     TIME_STEPS = input_seq.shape[1]
-    #     total_steps = len(test_scaled)
-    #     steps = 0
-    #     while len(predictions) < total_steps:
-    #         output = model(input_seq)
-    #         predictions.append(output.item())
-    #         if len(predictions) == total_steps:
-    #             break
-    #         # 构造新输入：[1, 1, num_features]
-    #         if steps + TIME_STEPS < total_steps:
-    #             # 用真实特征
-    #             next_input = torch.tensor(test_scaled[steps + TIME_STEPS], dtype=torch.float32).reshape(1, 1, num_features)
-    #         else:
-    #             # 用最后一个真实特征填充
-    #             next_input = torch.tensor(test_scaled[-1], dtype=torch.float32).reshape(1, 1, num_features)
-    #         # 用预测值替换第一个特征
-    #         next_input[0, 0, 0] = output.item()
-    #         input_seq = torch.cat((input_seq, next_input), dim=1)[:, -TIME_STEPS:, :]
-    #         steps += 1
-    #     predictions = np.array(predictions)
+        model_train(model, train_loader, criterion, optimizer, num_epochs, num_steps, logger, writer, device)
 
     # 4.3 模型预测 —— 直接用滑动窗口批量预测
     model.eval()
     with torch.no_grad():
-        # X_test 已经是 (N, TIME_STEPS, num_features)
-        X_test_tensor = torch.tensor(X_test, dtype=torch.float32)  # 👉 这里用 sliding_window 得到的 X_test
-        preds_scaled = model(X_test_tensor).squeeze(-1).cpu().numpy()  # (N,)
+        # X_test 已经在device上
+        preds_scaled = model(X_test).squeeze(-1).cpu().numpy()  # (N,)
 
     # 5.1 逆缩放
     # 因为 scaler.fit_transform 是对所有 feature 做的，这里我们只预测第 0 列，其它列填 0
@@ -186,37 +199,6 @@ def main(args):
 
     # 真值也要对齐：滑窗后 y_test 对应的是 test_data 从 TIME_STEPS 开始的部分
     y_test_original = test_data['Global_active_power'].values[TIME_STEPS:]
-
-    # # 5. 结果评估
-    # # 5.1 逆缩放
-    # dummy_array = np.zeros((len(predictions), X_train.shape[2] - 1))
-    # predictions_full = np.concatenate((predictions.reshape(-1,1), dummy_array), axis=1)
-    # predictions = scaler.inverse_transform(predictions_full)[:, 0]
-    #
-    # # 获取原始测试集的 Global_active_power
-    # y_test_original = test_data['Global_active_power'].values
-    #
-    # # 5.2 计算 MSE 和 MAE
-    # MSE = mean_squared_error(y_test_original, predictions)
-    # MAE = mean_absolute_error(y_test_original, predictions)
-    # print(f'{args.model} (Test {args.predict_days}) MSE: {MSE}, MAE: {MAE}')
-    # logger.info(f'{args.model} (Test {args.predict_days}) MSE: {MSE}, MAE: {MAE}')
-    #
-    # # 6. 结果可视化
-    # plt.figure(figsize=(12, 6))
-    # plt.plot(y_test_original, label='Actual')
-    # plt.plot(predictions, label=f'{args.model} Predicted')
-    # plt.title(f'{args.model} (Test {args.predict_days}): Actual vs Predicted Global Active Power')
-    # plt.xlabel('Time Steps')
-    # plt.ylabel('Global Active Power')
-    # plt.legend()
-    #
-    # # 保存预测值和真实值
-    # lstm_results = np.column_stack((y_test_original, predictions))
-    # output_file_name = f'{args.model.lower()}_predictions_{args.predict_days}.csv'
-    # np.savetxt(os.path.join(output_dir, output_file_name), lstm_results, delimiter=',', header='Actual,Predicted', comments='')
-    # plt.savefig(os.path.join(output_dir, f'{args.model.lower()}_predictions_{args.predict_days}.png'))
-    # plt.close()
 
     # -------------------------------
     # 5.1 逆缩放 —— 得到 predictions（预测值）
