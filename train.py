@@ -15,6 +15,7 @@ from config import get_parser
 import datetime
 import untils
 from torch.utils.tensorboard import SummaryWriter
+from sklearn.model_selection import train_test_split
 
 def sliding_window(dataset, time_steps=1, predict_future=False):
     X, y = [], []
@@ -59,13 +60,16 @@ def create_model(model_type, input_size, hidden_size, output_size, embed_dim=Non
     
     return model
 
-def model_train(model, train_loader, criterion, optimizer, num_epochs, num_steps, logger, writer, device):
+def model_train(model, train_loader, val_loader, criterion, optimizer, num_epochs, num_steps, logger, writer, device):
     print(next(model.parameters()).device)
     model.train()
     start_time = datetime.datetime.now()
     global_step = 0
-    #TODO 保留效果最好的一次模型的结果
+    best_val_loss = float('inf')
+    best_model_path = None
+
     for epoch in range(num_epochs):
+        model.train()
         for idx, (X_batch, y_batch) in enumerate(train_loader):
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device)
@@ -94,12 +98,37 @@ def model_train(model, train_loader, criterion, optimizer, num_epochs, num_steps
             writer.add_scalar('Loss/train', loss.item(), global_step)
             global_step += 1
 
-        writer.close()
-        weight_dir = './weight'
-        if not os.path.exists(weight_dir):
-            os.makedirs(weight_dir)
-        torch.save(model.state_dict(), os.path.join(weight_dir, f'{args.model.lower()}_model.pth'))
-    
+        # 每隔5个epoch进行一次验证集评估
+        if (epoch + 1) % 5 == 0 or epoch == num_epochs - 1:
+            model.eval()
+            val_losses = []
+            with torch.no_grad():
+                for X_val, y_val in val_loader:
+                    X_val = X_val.to(device)
+                    y_val = y_val.to(device)
+                    val_outputs = model(X_val)
+                    val_loss = criterion(val_outputs, y_val)
+                    val_losses.append(val_loss.item())
+            avg_val_loss = np.mean(val_losses)
+            print(f'Validation Loss after epoch {epoch+1}: {avg_val_loss:.4f}')
+            logger.info(f'Validation Loss after epoch {epoch+1}: {avg_val_loss:.4f}')
+            writer.add_scalar('Loss/val', avg_val_loss, epoch)
+
+            # 保存效果最好的模型
+            weight_dir = './weight'
+            if not os.path.exists(weight_dir):
+                os.makedirs(weight_dir)
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                best_model_path = os.path.join(weight_dir, f'{args.model.lower()}_best_model.pth')
+                torch.save(model.state_dict(), best_model_path)
+                print(f"Best model saved at epoch {epoch+1} with val_loss {best_val_loss:.4f}")
+
+    writer.close()
+    # 训练结束后加载最佳模型
+    if best_model_path:
+        model.load_state_dict(torch.load(best_model_path))
+
 def main(args):
     # 0. 设备选择
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -114,9 +143,8 @@ def main(args):
     # 1.3 数据缩放
     scaler = MinMaxScaler()
 
-    # 1.4 划分训练集和测试集
-    train_size = args.train_size  # 训练集取最后90天
-    train_data = train_data[-train_size:]
+    # 1.4 使用全部训练数据
+    # 直接使用全部train_data
 
     TIME_STEPS = args.time_steps
     #TODO 解决 test_data 的长度问题
@@ -126,23 +154,30 @@ def main(args):
     train_scaled = scaler.fit_transform(train_data[features])
     test_scaled = scaler.transform(test_data[features])
 
-    
+    # 1.5 划分训练集和验证集
     X_train, y_train = sliding_window(train_scaled, TIME_STEPS)
     print(f'X_train shape: {X_train.shape}, y_train shape: {y_train.shape}')
+    # 划分训练集和验证集（如8:2）
+    X_tr, X_val, y_tr, y_val = train_test_split(X_train, y_train, test_size=0.2, random_state=42, shuffle=True)
+
     # 创建测试集时，不进行滑动窗口，保留所有数据用于预测
     X_test, y_test = sliding_window(test_scaled, TIME_STEPS, predict_future=True)
     print(f'X_test shape: {X_test.shape}, y_test shape: {y_test.shape}')
 
     # 1.6 转换为 PyTorch 张量
-    X_train = torch.tensor(X_train, dtype=torch.float32).to(device)
-    y_train = torch.tensor(y_train, dtype=torch.float32).reshape(-1, 1).to(device)
+    X_tr = torch.tensor(X_tr, dtype=torch.float32).to(device)
+    y_tr = torch.tensor(y_tr, dtype=torch.float32).reshape(-1, 1).to(device)
+    X_val = torch.tensor(X_val, dtype=torch.float32).to(device)
+    y_val = torch.tensor(y_val, dtype=torch.float32).reshape(-1, 1).to(device)
     X_test = torch.tensor(X_test, dtype=torch.float32).to(device)
     y_test = torch.tensor(y_test, dtype=torch.float32).reshape(-1, 1).to(device)
 
     # 1.7 创建数据加载器
     batch_size = args.batch_size
-    train_dataset = TensorDataset(X_train, y_train)
+    train_dataset = TensorDataset(X_tr, y_tr)
+    val_dataset = TensorDataset(X_val, y_val)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
     # 2. 模型构建
     input_size = X_train.shape[2]
@@ -183,10 +218,11 @@ def main(args):
         # 4.1 模型训练
         num_epochs = args.num_epochs
         num_steps = len(train_loader)
-        model_train(model, train_loader, criterion, optimizer, num_epochs, num_steps, logger, writer, device)
+        model_train(model, train_loader, val_loader, criterion, optimizer, num_epochs, num_steps, logger, writer, device)
 
     # 4.3 模型预测 —— 直接用滑动窗口批量预测
     model.eval()
+    # 若训练阶段保存了最佳模型，则此处已加载
     with torch.no_grad():
         # X_test 已经在device上
         preds_scaled = model(X_test).squeeze(-1).cpu().numpy()  # (N,)

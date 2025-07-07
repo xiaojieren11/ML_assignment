@@ -1,6 +1,3 @@
-# 文件路径: /sdb/ML_assignment/models/ours.py
-# 请用以下全部内容替换该文件
-
 import torch
 import torch.nn as nn
 import math
