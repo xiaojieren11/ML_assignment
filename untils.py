@@ -23,10 +23,26 @@ def create_logger(log_dir):
 
 def plot(y_test_original, predictions, args, output_dir):
     plt.figure(figsize=(12, 6))
-    plt.plot(y_test_original, label='Actual')  # 真值
-    plt.plot(predictions, label=f'{args.model} Predicted')  # 预测
-    plt.title(f'{args.model} (Test {args.predict_days}): Actual vs Predicted')
-    plt.xlabel('Time Steps')
+    
+    # 展平二维数组以便绘制连续曲线
+    y_flat = y_test_original.flatten()
+    pred_flat = predictions.flatten()
+    
+    # 修改绘图逻辑，添加数据验证
+    if y_flat.shape[0] == 0 or pred_flat.shape[0] == 0:
+        raise ValueError("检测到空数据，无法绘制图表")
+    
+    # 绘制完整时间序列对比
+    plt.plot(y_flat, label='Actual')  # 真值
+    plt.plot(pred_flat, label=f'{args.model} Predicted')  # 预测
+    
+    # 添加垂直分割线显示每个预测窗口
+    window_size = args.predict_days
+    for i in range(1, len(y_test_original)):
+        plt.axvline(x=i*window_size, color='gray', linestyle='--', alpha=0.3)
+    
+    plt.title(f'{args.model} {args.predict_days}-Day Forecast: Actual vs Predicted')
+    plt.xlabel('Time Steps (each window={window_size} days)'.format(window_size=window_size))
     plt.ylabel('Global Active Power')
     plt.legend()
     plt.tight_layout()
