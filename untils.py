@@ -1,6 +1,7 @@
 import logging
 import os
 import matplotlib.pyplot as plt
+import numpy as np
 
 def create_logger(log_dir):
     """创建一个logger，并将日志保存到指定目录下的文件中"""
@@ -21,12 +22,22 @@ def create_logger(log_dir):
 
     return logger
 
+def sliding_window(dataset, width, step=1):
+    """滑动窗口生成训练样本，按指定宽度和步长划分数据"""
+    X, y = [], []
+    # 修改循环条件：使用 len(dataset)+1 确保包含完整窗口
+    for i in range(width, len(dataset)+1, step):
+        X.append(dataset[i-width:i, 1:])  # 特征不包含目标列
+        y.append(dataset[i-1, 0])  # 单天标签（修正索引对齐）
+    return np.array(X), np.array(y)
+
+# 修改绘图函数中的维度验证逻辑
 def plot(y_test_original, predictions, args, output_dir):
     plt.figure(figsize=(12, 6))
     
-    # 展平二维数组以便绘制连续曲线
-    y_flat = y_test_original.flatten()
-    pred_flat = predictions.flatten()
+    # 修改展平逻辑，适配新数据结构
+    y_flat = y_test_original.reshape(-1)  # 保持原有展平方式
+    pred_flat = predictions.reshape(-1)
     
     # 修改绘图逻辑，添加数据验证
     if y_flat.shape[0] == 0 or pred_flat.shape[0] == 0:

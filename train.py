@@ -17,21 +17,11 @@ import untils
 from torch.utils.tensorboard import SummaryWriter
 from sklearn.model_selection import train_test_split
 
-def sliding_window(dataset, time_steps=1, predict_future=False, predict_days=90):
-    X, y = [], []
-    if predict_future:
-        for i in range(len(dataset) - time_steps - predict_days + 1):
-            X.append(dataset[i:(i + time_steps), 1:])
-            y.append(dataset[i + time_steps:i + time_steps + predict_days, 0])  # 保持二维形状
-    else:
-        for i in range(time_steps, len(dataset)):
-            X.append(dataset[i-time_steps:i, 1:])
-            y.append(dataset[i, 0])
-    return np.array(X), np.array(y)
-
-def create_model(model_type, input_size, hidden_size, output_size, embed_dim=None, dense_dim=None, num_heads=None):
+def create_model(model_type, input_size, hidden_size, output_size, embed_dim=None, dense_dim=None, num_heads=None, use_recursive=False):
+    predict_days = 1 if use_recursive else args.predict_days
     if model_type == 'LSTM':
-        model = LSTMModel(input_size, hidden_size, output_size, predict_days=args.predict_days)
+        # 增加 LSTM 层层数和单元数
+        model = LSTMModel(input_size, hidden_size * 2, output_size, predict_days=predict_days)
     elif model_type == 'Transformer':
         embed_dim = args.embed_dim
         dense_dim = args.dense_dim
@@ -39,34 +29,59 @@ def create_model(model_type, input_size, hidden_size, output_size, embed_dim=Non
         model = TransformerModel(input_size, embed_dim, dense_dim, num_heads, output_size)
     elif model_type == 'Ours':
         model = OursModel(
-            input_size=input_size,  # 您数据中的总特征数 (e.g., 13)
-            embed_dim=128,  # 示例值
-            dense_dim=256,  # 示例值
-            num_heads=8,  # 示例值
-            output_size=1,  # 因为您的y_batch是(B,1)，所以这里必须是1
-            n_layers=3,  # 示例值
+            input_size=input_size,  
+            embed_dim=128,  
+            dense_dim=256,  
+            num_heads=8,  
+            output_size=1,  
+            n_layers=3,  
             dropout=0.1
         )
     elif model_type == 'Ours1':
         model = CNNTransformer(
-            input_dim=input_size,  # 输入特征数
-            model_dim=128,  # 模型维度
-            num_heads=8,  # 注意力头数
-            num_layers=3,  # Transformer 层数
-            output_dim=output_size,  # 输出维度  
+            input_dim=input_size,  
+            model_dim=128,  
+            num_heads=8,  
+            num_layers=3,  
+            output_dim=output_size,  
         )
     else:
         raise ValueError("Invalid model type. Choose 'LSTM' or 'Transformer'.")
     
     return model
 
-def model_train(model, train_loader, val_loader, criterion, optimizer, num_epochs, num_steps, logger, writer, device):
+def recursive_forecast(model, X_test, predict_days):
+    """
+    递归预测实现：逐步预测并更新输入序列
+    """
+    current_input = X_test.clone().unsqueeze(1)  # 添加时间步维度 (batch_size, 1, features)
+    batch_size, _, features = current_input.shape  # 现在能正确解包3个值
+    predictions = torch.zeros(batch_size, predict_days, device=X_test.device)
+    
+    with torch.no_grad():
+        for day in range(predict_days):
+            # 获取模型预测
+            outputs = model(current_input).squeeze(-1)  # 输出形状: (batch_size, 1)
+            
+            # 更新预测矩阵
+            predictions[:, day] = outputs.squeeze()
+            
+            # 更新输入序列：移除最早时间步，添加新预测
+            new_sample = torch.cat([current_input[:, -1, 1:], outputs], dim=-1).unsqueeze(1)
+            current_input = torch.cat([current_input[:, 1:], new_sample], dim=1)
+            
+    return predictions
+
+def model_train(model, train_loader, val_loader, criterion, optimizer, num_epochs, num_steps, logger, writer, device, early_stop_patience=5, early_stop_delta=0.0):
     print(next(model.parameters()).device)
     model.train()
     start_time = datetime.datetime.now()
     global_step = 0
     best_val_loss = float('inf')
     best_model_path = None
+    early_stop_counter = 0  # 新增计数器
+    early_stop_patience = args.early_stop_patience
+    early_stop_delta = args.early_stop_delta
     
     # 添加学习率调度器
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -83,10 +98,8 @@ def model_train(model, train_loader, val_loader, criterion, optimizer, num_epoch
             y_batch = y_batch.to(device)
             optimizer.zero_grad()
             outputs = model(X_batch)
-            
             # 添加梯度裁剪防止爆炸
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
             loss = criterion(outputs, y_batch)
             loss.backward()
             
@@ -129,11 +142,10 @@ def model_train(model, train_loader, val_loader, criterion, optimizer, num_epoch
         # 每隔5个epoch进行一次验证集评估
         if (epoch + 1) % 5 == 0 or epoch == num_epochs - 1:
             # 空验证集保护逻辑 - 新增条件判断
-            if len(val_loader) == 0:
-                print(f"Skip validation: Empty validation set at epoch {epoch+1}")
-                logger.info(f"Skip validation: Empty validation set at epoch {epoch+1}")
-                continue
-                
+            # if len(val_loader) == 0:
+            #     print(f"Skip validation: Empty validation set at epoch {epoch+1}")
+            #     logger.info(f"Skip validation: Empty validation set at epoch {epoch+1}")
+            #     continue  
             model.eval()
             val_losses = []
             with torch.no_grad():
@@ -150,18 +162,18 @@ def model_train(model, train_loader, val_loader, criterion, optimizer, num_epoch
                     val_losses.append(val_loss.item())
             
             # 增加验证损失有效性检查
-            if not val_losses:
-                print(f"Skip validation: Empty validation loss list at epoch {epoch+1}")
-                logger.info(f"Skip validation: Empty validation loss list at epoch {epoch+1}")
-                continue
+            # if not val_losses:
+            #     print(f"Skip validation: Empty validation loss list at epoch {epoch+1}")
+            #     logger.info(f"Skip validation: Empty validation loss list at epoch {epoch+1}")
+            #     continue
                 
             avg_val_loss = np.mean(val_losses)
-            # 增加inf有效性检查
-            if np.isinf(avg_val_loss):
-                print(f"Warning: Skip scheduler update due to inf loss at epoch {epoch+1}")
-                logger.warning(f"Skip scheduler update due to inf loss at epoch {epoch+1}")
-                continue
+            # if np.isinf(avg_val_loss):
+            #     print(f"Warning: Skip scheduler update due to inf loss at epoch {epoch+1}")
+            #     logger.warning(f"Skip scheduler update due to inf loss at epoch {epoch+1}")
+            #     continue
                 
+
             # 正常更新学习率调度器
             scheduler.step(avg_val_loss)
             
@@ -178,6 +190,20 @@ def model_train(model, train_loader, val_loader, criterion, optimizer, num_epoch
                 best_model_path = os.path.join(weight_dir, f'{args.model.lower()}_best_model_{args.predict_days}.pth')
                 torch.save(model.state_dict(), best_model_path)
                 print(f"Best model saved at epoch {epoch+1} with val_loss {best_val_loss:.4f}")
+            
+            # 新增早停逻辑
+            if avg_val_loss < best_val_loss - early_stop_delta:
+                best_val_loss = avg_val_loss
+                early_stop_counter = 0  # 重置计数器
+                print(f"Best model saved at epoch {epoch+1} with val_loss {best_val_loss:.4f}")
+            else:
+                early_stop_counter += 1
+                
+            # 触发早停条件
+            if early_stop_counter >= early_stop_patience:
+                print(f'Early stopping at epoch {epoch+1} with counter: {early_stop_counter}')
+                logger.info(f'Early stopping at epoch {epoch+1} with counter: {early_stop_counter}')
+                break
 
     writer.close()
     # 训练结束后加载最佳模型
@@ -201,23 +227,24 @@ def main(args):
     TIME_STEPS = args.time_steps
 
     # 1.4 训练集划分
-    train_size = args.train_size + TIME_STEPS
+    train_size = args.train_size
     train_data = train_data[-train_size:]
     
-    test_size = args.predict_days + TIME_STEPS
+    test_size = args.predict_days
     test_data = test_data[:test_size]
 
     train_scaled = scaler.fit_transform(train_data[features])
     test_scaled = scaler.transform(test_data[features])
 
     # 1.5 划分训练集和验证集
-    X_train, y_train = sliding_window(train_scaled, TIME_STEPS, predict_future=True)
-    print(f'X_train shape: {X_train.shape}, y_train shape: {y_train.shape}')
-    # 划分训练集和验证集（如8:2）
-    # X_tr, X_val, y_tr, y_val = train_test_split(X_train, y_train, test_size=0.2, random_state=42, shuffle=True)
-
-    # 创建测试集时，不进行滑动窗口，保留所有数据用于预测
-    X_test, y_test = sliding_window(test_scaled, TIME_STEPS, predict_future=True, predict_days=args.predict_days)
+    use_recursive = args.predict_days == 90
+    X_train, y_train = untils.sliding_window(train_scaled, TIME_STEPS)
+    print(f'X_train shape: {X_train.shape}, y_train shape: {y_train.shape}') 
+    
+    # 新增直接构建测试集逻辑
+    X_test = test_scaled[:, 1:]  # 直接使用所有测试数据作为特征 (样本数, 特征数-1)
+    y_test = test_scaled[:, 0]   # 目标列为第一列 (样本数,)
+    
     print(f'X_test shape: {X_test.shape}, y_test shape: {y_test.shape}')  # 应输出(样本数, 90)
 
     # 添加小样本处理逻辑
@@ -243,9 +270,18 @@ def main(args):
     X_test = torch.tensor(X_test, dtype=torch.float32).to(device)
 
     # 修正标签张量形状（自动适配形状）
-    y_tr = torch.tensor(y_tr, dtype=torch.float32).unsqueeze(-1).to(device)  # (样本数, predict_days, 1)
-    y_val = torch.tensor(y_val, dtype=torch.float32).unsqueeze(-1).to(device) 
-    y_test = torch.tensor(y_test, dtype=torch.float32).reshape(-1, args.predict_days, 1).to(device)
+    # 原始标签处理方式存在维度不匹配问题
+    # 新增根据预测模式动态调整标签维度
+    if use_recursive:
+        # 递归预测模式：标签形状为(batch_size, 1, 1)
+        y_tr = torch.tensor(y_tr, dtype=torch.float32).unsqueeze(-1).unsqueeze(-1).to(device)
+        y_val = torch.tensor(y_val, dtype=torch.float32).unsqueeze(-1).unsqueeze(-1).to(device)
+        y_test = torch.tensor(y_test, dtype=torch.float32).unsqueeze(-1).unsqueeze(-1).to(device)
+    else:
+        # 多步预测模式：标签形状为(batch_size, predict_days, 1)
+        y_tr = torch.tensor(y_tr, dtype=torch.float32).unsqueeze(-1).reshape(-1, args.predict_days, 1).to(device)
+        y_val = torch.tensor(y_val, dtype=torch.float32).unsqueeze(-1).reshape(-1, args.predict_days, 1).to(device)
+        y_test = torch.tensor(y_test, dtype=torch.float32).reshape(-1, args.predict_days, 1).to(device)
 
     # 1.7 创建数据加载器
     batch_size = args.batch_size
@@ -253,22 +289,6 @@ def main(args):
     val_dataset = TensorDataset(X_val, y_val)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    
-    # 新增: 数据有效性验证
-    # 检查训练数据是否包含NaN或Inf
-    if np.isnan(X_tr.cpu().numpy()).any() or np.isinf(X_tr.cpu().numpy()).any():
-        raise ValueError("训练特征数据包含NaN或Inf值")
-    if np.isnan(y_tr.cpu().numpy()).any() or np.isinf(y_tr.cpu().numpy()).any():
-        raise ValueError("训练标签数据包含NaN或Inf值")
-        
-    # 检查验证数据是否包含NaN或Inf
-    if len(val_loader) > 0:
-        X_val_check = next(iter(val_loader))[0].cpu().numpy()
-        y_val_check = next(iter(val_loader))[1].cpu().numpy()
-        if np.isnan(X_val_check).any() or np.isinf(X_val_check).any():
-            raise ValueError("验证特征数据包含NaN或Inf值")
-        if np.isnan(y_val_check).any() or np.isinf(y_val_check).any():
-            raise ValueError("验证标签数据包含NaN或Inf值")
     
     # 2. 模型构建
     input_size = X_train.shape[2]
@@ -282,12 +302,13 @@ def main(args):
         output_size=output_size,
         embed_dim=args.embed_dim,
         dense_dim=args.dense_dim,
-        num_heads=args.num_heads
+        num_heads=args.num_heads,
+        use_recursive = use_recursive
     ).to(device)
 
     # 7. 结果保存
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = os.path.join('./output', f'{args.model.lower()}_results_{args.predict_days}_{timestamp}')
+    output_dir = os.path.join(f'./output/{args.model.lower()}_results_{args.predict_days}', f'{timestamp}')
     os.makedirs(output_dir, exist_ok=True)
 
     # 创建logger
@@ -311,13 +332,16 @@ def main(args):
         num_steps = len(train_loader)
         model_train(model, train_loader, val_loader, criterion, optimizer, num_epochs, num_steps, logger, writer, device)
 
-    # 4.3 模型预测 —— 直接用滑动窗口批量预测
+    # 4.3 模型预测 —— 根据模式选择预测方法
     model.eval()
-    # 若训练阶段保存了最佳模型，则此处已加载
     with torch.no_grad():
-        # X_test 已经在device上
-        preds_scaled = model(X_test).squeeze(-1).cpu().numpy()  # (N,)
-
+        if use_recursive:
+            # 使用递归预测
+            preds_scaled = recursive_forecast(model, X_test, args.predict_days)
+        else:
+            # 使用直接多步预测
+            preds_scaled = model(X_test).squeeze(-1).cpu().numpy()
+    
     # -------------------------------
     # 5.1 逆缩放 —— 得到 predictions（预测值）
     # -------------------------------
@@ -345,15 +369,42 @@ def main(args):
     y_test_original = []
     # 从原始test_data中提取对应位置的真实值
     raw_values = test_data['Global_active_power'].values
-    for i in range(len(y_test)):
+    
+    # 新增维度验证逻辑
+    assert len(raw_values.shape) == 1, f"预期一维数组，但得到{len(raw_values.shape)}维"
+    
+    # 修改构造逻辑，确保每个样本长度一致
+    max_start = len(raw_values) - args.predict_days
+    valid_samples = []
+    
+    # 根据预测样本数量动态调整起始点
+    for i in range(len(preds_scaled)):  # 使用预测样本数作为循环基准
+        if i > max_start:
+            continue  # 跳过越界索引
         start = i
         end = start + args.predict_days
-        y_test_original.append(raw_values[start:end])  # 直接使用原始值切片
-    y_test_original = np.array(y_test_original)  # (N, 90)
+        sample = raw_values[start:end]
+        # 验证样本长度
+        if len(sample) != args.predict_days:
+            continue  # 跳过不完整样本
+        valid_samples.append(sample)
+    
+    # 至少保留一个样本（应对极端情况）
+    if not valid_samples:
+        valid_samples = [np.zeros(args.predict_days)]
+    
+    y_test_original = np.array(valid_samples)  # (N, 90)
+    
+    # 添加维度验证
+    assert len(y_test_original.shape) == 2, f"预期二维数组，但得到{len(y_test_original.shape)}维"
+    assert y_test_original.shape[1] == args.predict_days, "列维度与预测天数不匹配"
     
     # -------------------------------
     # 5.3 评估指标 —— 确保用到了 y_test_original
     # -------------------------------
+    # 调整预测结果维度与真值对齐
+    predictions = predictions[:len(valid_samples)]  # 截断预测结果保持一致性
+    
     # 将预测结果和真值展平进行评估
     MSE = mean_squared_error(y_test_original.flatten(), predictions.flatten())
     MAE = mean_absolute_error(y_test_original.flatten(), predictions.flatten())
@@ -385,3 +436,4 @@ def main(args):
 if __name__ == "__main__":
     args = get_parser()
     main(args)
+

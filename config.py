@@ -19,6 +19,11 @@ def get_parser():
     parser.add_argument('--model_path', type=str, help='模型路径')
     parser.add_argument('--model', type=str, default='LSTM', help='选择模型 (LSTM, Transformer,Ours)')
     parser.add_argument('--predict_days', type=int, choices=[90, 365], default=90, help='预测天数')
+    # 新增早停参数
+    parser.add_argument('--early_stop_patience', type=int, default=5, 
+                        help='Number of epochs with no improvement after which training will be stopped')
+    parser.add_argument('--early_stop_delta', type=float, default=0.001, 
+                        help='Minimum change in validation loss to qualify as an improvement')
 
     args = parser.parse_args()
     return args
