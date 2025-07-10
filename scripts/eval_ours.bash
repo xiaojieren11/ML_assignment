@@ -1,7 +1,6 @@
 #!/bin/bash
 
-python train.py --model Ours1 \
+python train.py --model Ours \
                 --eval_only \
                 --predict_days 365 \
-                --win_width 30 \
-                --model_path ./weight/ours1_best_model_365.pth 
+                --model_path ./weight/ours_best_model_365.pth 

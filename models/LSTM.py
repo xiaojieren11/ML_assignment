@@ -4,7 +4,6 @@ import torch.nn as nn
 class LSTMModel(nn.Module):
     def __init__(self, input_size, hidden_size, output_size):
         super(LSTMModel, self).__init__()
-        # 单层 LSTM，batch_first=True 表示输入维度为 (batch, seq, feature)
         self.lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,

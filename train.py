@@ -10,11 +10,11 @@ import utils
 import datetime
 import os
 from torch.utils.tensorboard import SummaryWriter
-from models.LSTM import LSTMModel  # 导入 LSTM 模型
+from models.LSTM import LSTMModel 
 from models.Transformer import TransformerModel 
-from models.Ours import CNNTransformer  # 导入 Ours 模型
+from models.Ours import CNNTransformer 
 
-def create_model(model_type, input_size, hidden_size, output_size, embed_dim=32, dense_dim=16, num_heads=4):
+def create_model(model_type, input_size, hidden_size, output_size, embed_dim, dense_dim, num_heads):
     if model_type == 'LSTM':
         model = LSTMModel(
             input_size, 
@@ -110,7 +110,7 @@ def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
 
-    #结果保存
+    # 结果保存
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = os.path.join(f'./output/{args.model.lower()}_results_{args.predict_days}', f'{timestamp}')
     if not os.path.exists(output_dir):
@@ -119,7 +119,7 @@ def main(args):
     log_dir=os.path.join(output_dir, 'runs')
     writer = SummaryWriter(log_dir)
 
-    #数据加载
+    # 数据加载
     train_df = pd.read_csv('./dataset/train_processed.csv', index_col='datetime', parse_dates=True)
     test_df = pd.read_csv('./dataset/test_processed.csv', index_col='datetime', parse_dates=True)
 
@@ -163,34 +163,36 @@ def main(args):
             model_type=args.model,
             input_size=X_train.shape[2],
             hidden_size=args.hidden_size,
-            output_size=1,
+            output_size=args.output_size,
             embed_dim=args.embed_dim,
             dense_dim=args.dense_dim,
             num_heads=args.num_heads,
     ).to(device)
 
-    #仅测试模型则跳过训练过程
+    # 如果仅测试模型则跳过训练过程
     if args.eval_only:
         model_path = args.model_path
         model.load_state_dict(torch.load(model_path,weights_only=True))
         print("已加载模型！")
     else:
         model_train(model, train_loader, EPOCHS, LEARNING_RATE, args, logger, writer)
-        #绘制损失图
+        # 绘制损失图
         utils.plot_loss(log_dir)
         # # 训练结束后加载最佳模型
         # if best_model_path:
         #     model.load_state_dict(torch.load(best_model_path))
 
-    #模型测试
+    # 模型测试
     predictions_rescaled, actuals_rescaled, mse, mae = model_eval(model, test_loader, target_scaler)
-    #打印结果
+    print("Actuals shape:", actuals_rescaled.shape)
+    print("Predictions shape:", predictions_rescaled.shape)
+    # 打印结果
     print(f'{args.model} (Test {args.predict_days}) → MSE: {mse:.4f}, MAE: {mae:.4f}')
     logger.info(f'{args.model} (Test {args.predict_days}) → MSE: {mse:.4f}, MAE: {mae:.4f}')
 
-    #保存结果
+    # 保存结果
     utils.save_res(actuals_rescaled, predictions_rescaled, args, output_dir, mse, mae)
-    #绘制结果
+    # 绘制结果
     utils.plot_res(actuals_rescaled, predictions_rescaled, args, output_dir)
 
 if __name__ == '__main__':

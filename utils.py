@@ -33,6 +33,7 @@ def sliding_window(data, sequence_length, target_column_index):
 
 
 def plot_res(actuals_rescaled, predictions_rescaled, args, output_dir):
+    plt.clf()  # 清除之前的绘图状态
     plt.rcParams.update(plt.rcParamsDefault)
 
     plt.style.use('seaborn-v0_8-whitegrid')
@@ -41,14 +42,17 @@ def plot_res(actuals_rescaled, predictions_rescaled, args, output_dir):
     num_plotted_days = len(actuals_rescaled)
     day_numbers = np.arange(1, num_plotted_days + 1)
 
-    # 使用全英文图例
-    ax.plot(day_numbers, actuals_rescaled, label='Actual Values', color='royalblue', linewidth=2)
-    ax.plot(day_numbers, predictions_rescaled, label='Predicted Values', color='orangered', linestyle='--', linewidth=2)
+    # 图例
+    actual_line, = ax.plot(day_numbers, actuals_rescaled, label='Actual Values', color='royalblue', linewidth=2)
+    predicted_line, = ax.plot(day_numbers, predictions_rescaled, label='Predicted Values', color='orangered', linestyle='--', linewidth=2)
 
     ax.set_title(f'Global Active Power: Actual vs. Predicted ({num_plotted_days}-Day Forecast)', fontsize=16)
     ax.set_xlabel(f'Forecast Day Number', fontsize=12)
     ax.set_ylabel('Global Active Power (kW)', fontsize=12)
-    ax.legend(fontsize=12)
+
+    # 手动控制图例的显示
+    ax.legend(handles=[actual_line, predicted_line], labels=['Actual Values', 'Predicted Values'], fontsize=12)
+    
     ax.grid(True)
     plt.tight_layout()
 

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import math
 
-# 修改1：添加位置编码模块
+# 位置编码模块
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super(PositionalEncoding, self).__init__()
@@ -20,7 +20,6 @@ class TransformerEncoder(nn.Module):
     def __init__(self, embed_dim, dense_dim, num_heads):
         super(TransformerEncoder, self).__init__()
         self.attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
-        # 修改2：优化前馈网络结构，增加中间维度
         self.dense_proj = nn.Sequential(
             nn.Linear(embed_dim, dense_dim * 2),
             nn.GELU(),
@@ -33,7 +32,7 @@ class TransformerEncoder(nn.Module):
 
     def forward(self, inputs):
         attention_output, _ = self.attention(inputs, inputs, inputs)
-        # 修改3：调整残差连接顺序
+        # 调整残差连接顺序
         proj_input = self.layernorm_1(inputs + self.dropout(attention_output))
         proj_output = self.dense_proj(proj_input)
         return self.layernorm_2(proj_input + self.dropout(proj_output))
@@ -41,7 +40,7 @@ class TransformerEncoder(nn.Module):
 class TransformerModel(nn.Module):
     def __init__(self, input_size, embed_dim, dense_dim, num_heads, output_size):
         super(TransformerModel, self).__init__()
-        # 修改4：增加编码层堆叠数量
+        # 增加编码层堆叠数量
         self.embedding = nn.Linear(input_size, embed_dim)
         self.pos_encoding = PositionalEncoding(embed_dim)
         # 堆叠4个Transformer编码层
@@ -51,7 +50,7 @@ class TransformerModel(nn.Module):
         ])
         self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
         self.dropout = nn.Dropout(0.5)
-        # 修改5：增强分类头
+        # 增强分类头
         self.classifier = nn.Sequential(
             nn.Linear(embed_dim, dense_dim),
             nn.ReLU(),

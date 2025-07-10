@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 
 def preprocess_data(file_path):
-    # 定义最终正确的13个列名
+    # 13个列名
     column_names = [
         'DateTime', 'Global_active_power', 'Global_reactive_power', 'Voltage',
         'Global_intensity', 'Sub_metering_1', 'Sub_metering_2', 'Sub_metering_3',
@@ -11,7 +11,7 @@ def preprocess_data(file_path):
 
     try:
         if 'train.csv' in file_path:
-            # train.csv 有一个无效的标题行，跳过它并使用正确的13个列名
+            # train.csv 有一个无效的标题行，跳过并使用正确的13个列名
             df = pd.read_csv(
                 file_path,
                 sep=',',
@@ -52,7 +52,7 @@ def preprocess_data(file_path):
     if all(c in df.columns for c in ['Sub_metering_1', 'Sub_metering_2', 'Sub_metering_3']):
         df['sub_metering_remainder'] = (df['Global_active_power'] * 1000 / 60) - \
                                        (df['Sub_metering_1'] + df['Sub_metering_2'] + df['Sub_metering_3'])
-
+    # 定义聚合规则
     aggregation_rules = {
         'Global_active_power': 'sum', 'Global_reactive_power': 'sum', 'Voltage': 'mean',
         'Global_intensity': 'mean', 'Sub_metering_1': 'sum', 'Sub_metering_2': 'sum',
