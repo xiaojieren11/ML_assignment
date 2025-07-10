@@ -8,8 +8,12 @@ class LSTMModel(nn.Module):
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=3,
+<<<<<<< HEAD
             batch_first=True,
             dropout=0.2
+=======
+            batch_first=True
+>>>>>>> change
         )
         self.linear = nn.Linear(hidden_size, output_size * predict_days)
         self.predict_days = predict_days

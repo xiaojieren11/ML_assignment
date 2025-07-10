@@ -4,8 +4,13 @@ import argparse
 def get_parser():
     parser = argparse.ArgumentParser(description="Train LSTM and Transformer models for power prediction.")
 
+<<<<<<< HEAD
     parser.add_argument('--time_steps', type=int, default=90, help='Number of time steps for the sliding window.')
     parser.add_argument('--hidden_size', type=int, default=128, help='Hidden size for the LSTM model.')
+=======
+    parser.add_argument('--win_width', type=int, default=30, help='Number of time steps for the sliding window.')
+    parser.add_argument('--hidden_size', type=int, default=32, help='Hidden size for the LSTM model.')
+>>>>>>> change
     parser.add_argument('--embed_dim', type=int, default=32, help='Embedding dimension for the Transformer model.')
     parser.add_argument('--dense_dim', type=int, default=16, help='Dense dimension for the Transformer model.')
     parser.add_argument('--num_heads', type=int, default=4, help='Number of heads for the Transformer model.')
@@ -27,3 +32,4 @@ def get_parser():
 
     args = parser.parse_args()
     return args
+    
