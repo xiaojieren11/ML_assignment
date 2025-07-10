@@ -1,82 +1,72 @@
 import pandas as pd
 import numpy as np
 
-def process_data(train_file, test_file, output_train_file, output_test_file):
-    """
-    处理 train.csv 和 test.csv 数据集，按天分组并计算指定列的总和与平均值。
-    """
+def preprocess_data(file_path):
+    # 定义最终正确的13个列名
+    column_names = [
+        'DateTime', 'Global_active_power', 'Global_reactive_power', 'Voltage',
+        'Global_intensity', 'Sub_metering_1', 'Sub_metering_2', 'Sub_metering_3',
+        'RR', 'NBJRR1', 'NBJRR5', 'NBJRR10', 'NBJBROU'
+    ]
 
-    # 定义需要计算总和与平均值的列
-    sum_columns = ['Global_active_power', 'Global_reactive_power', 'Sub_metering_1', 'Sub_metering_2','Sub_metering_3']
-    mean_columns = ['Voltage', 'Global_intensity']
-    first_columns = ['RR', 'NBJRR1', 'NBJRR5', 'NBJRR10', 'NBJBROU']
+    try:
+        if 'train.csv' in file_path:
+            # train.csv 有一个无效的标题行，跳过它并使用正确的13个列名
+            df = pd.read_csv(
+                file_path,
+                sep=',',
+                header=None,
+                skiprows=1,
+                names=column_names,
+                low_memory=False,
+                on_bad_lines='skip'
+            )
+        elif 'test.csv' in file_path:
+            # test.csv 没有标题行，直接使用13个列名
+            df = pd.read_csv(
+                file_path,
+                sep=',',
+                header=None,
+                names=column_names,
+                low_memory=False,
+                on_bad_lines='skip'
+            )
+        else:
+            raise ValueError("无法识别的文件路径，请确保文件名为 train.csv 或 test.csv")
+    except Exception as e:
+        print(f"读取文件 {file_path} 时出现严重错误，请检查文件格式和内容。错误: {e}")
+        raise
 
-    # 处理训练数据
-    train_df = pd.read_csv(train_file)
-    train_df['DateTime'] = pd.to_datetime(train_df['DateTime'], format='%Y-%m-%d %H:%M:%S').dt.date
+    print(f"文件 '{file_path}' 已根据统一格式加载。")
 
-    # 将相关列转换为数值类型
-    cols_to_convert = ['Global_active_power', 'Global_reactive_power', 'Voltage', 'Global_intensity', 'Sub_metering_1', 'Sub_metering_2', 'Sub_metering_3']
-    for col in cols_to_convert:
-        train_df[col] = pd.to_numeric(train_df[col], errors='coerce')
+    df['datetime'] = pd.to_datetime(df['DateTime'], errors='coerce')
+    df.dropna(subset=['datetime'], inplace=True)
+    df = df.set_index('datetime')
+    df = df.drop('DateTime', axis=1)
 
-    # 填充缺失值
-    for col in cols_to_convert:
-        train_df[col] = train_df[col].fillna(train_df[col].mean())
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    # 计算 sub_metering_remainder
-    train_df['Sub_metering_3'] = train_df['Sub_metering_3'].fillna(0)
-    train_df['Sub_metering_remainder'] = (train_df['Global_active_power'] * 1000 / 60) - (train_df['Sub_metering_1'] + train_df['Sub_metering_2'] + train_df['Sub_metering_3'])
-    sum_columns.append('Sub_metering_remainder')
+    df.fillna(method='ffill', inplace=True)
 
-    print(train_df.dtypes)
-    train_grouped = train_df.groupby('DateTime').agg(
-        **{col: pd.NamedAgg(column=col, aggfunc='sum') for col in sum_columns},
-        **{col: pd.NamedAgg(column=col, aggfunc='mean') for col in mean_columns},
-        **{col: pd.NamedAgg(column=col, aggfunc='first') for col in first_columns}
-    ).reset_index()
-    train_grouped.to_csv(output_train_file, index=False)
+    if all(c in df.columns for c in ['Sub_metering_1', 'Sub_metering_2', 'Sub_metering_3']):
+        df['sub_metering_remainder'] = (df['Global_active_power'] * 1000 / 60) - \
+                                       (df['Sub_metering_1'] + df['Sub_metering_2'] + df['Sub_metering_3'])
 
-    # 处理测试数据
-    # 定义列名
-    columns = ['DateTime', 'Global_active_power', 'Global_reactive_power', 'Voltage', 'Global_intensity', 'Sub_metering_1', 'Sub_metering_2', 'Sub_metering_3', 'RR', 'NBJRR1', 'NBJRR5', 'NBJRR10', 'NBJBROU']
+    aggregation_rules = {
+        'Global_active_power': 'sum', 'Global_reactive_power': 'sum', 'Voltage': 'mean',
+        'Global_intensity': 'mean', 'Sub_metering_1': 'sum', 'Sub_metering_2': 'sum',
+        'Sub_metering_3': 'sum', 'sub_metering_remainder': 'sum', 'RR': 'first',
+        'NBJRR1': 'first', 'NBJRR5': 'first', 'NBJRR10': 'first', 'NBJBROU': 'first'
+    }
+    cols_to_agg = [col for col in aggregation_rules if col in df.columns]
+    df_daily = df[cols_to_agg].resample('D').agg({k: aggregation_rules[k] for k in cols_to_agg})
+    df_daily.fillna(method='ffill', inplace=True)
 
-    # 创建包含列名的 DataFrame
-    columns_df = pd.DataFrame([columns])
+    if 'RR' in df_daily.columns:
+        df_daily['RR'] = df_daily['RR'] / 10.0
 
-    # 读取原始测试数据
-    test_df = pd.read_csv(test_file, header=None)
-
-    # 将列名添加到测试数据的最前面
-    test_df = pd.concat([columns_df, test_df], ignore_index=True)
-
-    # 将更新后的数据保存到临时文件
-    temp_test_file = 'test_temp.csv'
-    test_df.to_csv(temp_test_file, index=False, header=False)
-
-    # 从临时文件读取数据
-    test_df = pd.read_csv(temp_test_file)
-
-    test_df['DateTime'] = pd.to_datetime(test_df['DateTime'], format='%Y-%m-%d %H:%M:%S').dt.date
-
-    # 将相关列转换为数值类型
-    for col in cols_to_convert:
-        test_df[col] = pd.to_numeric(test_df[col], errors='coerce')
-
-    # 填充缺失值
-    for col in cols_to_convert:
-        test_df[col] = test_df[col].fillna(test_df[col].mean())
-
-    # 计算 sub_metering_remainder
-    test_df['Sub_metering_3'] = test_df['Sub_metering_3'].fillna(0)
-    test_df['Sub_metering_remainder'] = (test_df['Global_active_power'] * 1000 / 60) - (test_df['Sub_metering_1'] + test_df['Sub_metering_2'] + test_df['Sub_metering_3'])
-    
-    test_grouped = test_df.groupby('DateTime').agg(
-        **{col: pd.NamedAgg(column=col, aggfunc='sum') for col in sum_columns},
-        **{col: pd.NamedAgg(column=col, aggfunc='mean') for col in mean_columns},
-        **{col: pd.NamedAgg(column=col, aggfunc='first') for col in first_columns}
-    ).reset_index()
-    test_grouped.to_csv(output_test_file, index=False)
+    return df_daily
 
 if __name__ == "__main__":
     # 定义输入和输出文件路径
@@ -85,5 +75,5 @@ if __name__ == "__main__":
     output_train_file = 'train_processed.csv'
     output_test_file = 'test_processed.csv'
 
-    # 调用数据处理函数
-    process_data(train_file, test_file, output_train_file, output_test_file)
+    preprocess_data(train_file).to_csv(output_train_file)
+    preprocess_data(test_file).to_csv(output_test_file)

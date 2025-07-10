@@ -8,7 +8,7 @@ class LSTMModel(nn.Module):
         self.lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,
-            num_layers=10,
+            num_layers=3,
             batch_first=True
         )
         # 从隐藏状态到输出的全连接层
