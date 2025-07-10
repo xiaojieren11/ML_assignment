@@ -1,6 +1,17 @@
 #!/bin/bash
 
-python train.py --model Transformer \
-                --num_epochs 10 \
+for _ in {1..5}
+do
+  python train.py --model Transformer \
+                --num_epochs 200 \
+                --predict_days 365 \
+                --win_width 30 
+done
+
+for _ in {1..5}
+do
+  python train.py --model Transformer \
+                --num_epochs 200 \
                 --predict_days 90 \
-                --win_width 30 \
+                --win_width 30 
+done
