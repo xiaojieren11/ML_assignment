@@ -1,0 +1,6 @@
+Model,Predict_Days,MSE,MAE
+Transformer,90,254503.98,378.16397
+Transformer,90,258828.58,394.0912
+Transformer,90,279488.66,395.5294
+Transformer,90,292616.5,399.89938
+Transformer,90,322254.66,417.073
