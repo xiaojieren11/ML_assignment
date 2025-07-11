@@ -3,7 +3,7 @@ import argparse
 def get_parser():
     parser = argparse.ArgumentParser(description="Train LSTM and Transformer models for power prediction.")
 
-    parser.add_argument('--win_width', type=int, default=30, help='Number of time steps for the sliding window.')
+    parser.add_argument('--win_width', type=int, default=7, help='Number of time steps for the sliding window.')
     parser.add_argument('--hidden_size', type=int, default=128, help='Hidden size for the LSTM model.')
     parser.add_argument('--embed_dim', type=int, default=64, help='Embedding dimension for the Transformer model.')
     parser.add_argument('--dense_dim', type=int, default=64, help='Dense dimension for the Transformer model.')
@@ -17,6 +17,7 @@ def get_parser():
     parser.add_argument('--model_path', type=str, help='Path to the saved model for evaluation.')
     parser.add_argument('--model', type=str, default='LSTM', help='choose from (LSTM, Transformer,Ours)')
     parser.add_argument('--predict_days', type=int, choices=[90, 365], default=90, help='days to predict (90 or 365).')
+    parser.add_argument('--train_days', type=int, default=90, help='days for training.')
 
     args = parser.parse_args()
     return args

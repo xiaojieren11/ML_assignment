@@ -64,19 +64,23 @@ def plot_loss(log_dir):
     ea = event_accumulator.EventAccumulator(log_dir)
     ea.Reload()
 
-    # 提取 'Loss/train' 标量数据
-    losses = ea.Scalars('Loss/train')
-
+    # 提取训练损失和验证损失
+    train_losses = ea.Scalars('Loss/train')
+    val_losses = ea.Scalars('Loss/val')  # 新增验证损失读取
+    
     # 提取步数和值
-    steps = [item.step for item in losses]
-    values = [item.value for item in losses]
+    train_steps = [item.step for item in train_losses]
+    train_values = [item.value for item in train_losses]
+    val_steps = [item.step for item in val_losses]  # 新增验证损失步数
+    val_values = [item.value for item in val_losses]  # 新增验证损失值
 
     # 绘制 loss 曲线
     plt.figure(figsize=(10, 5))
-    plt.plot(steps, values, label='Training Loss')
-    plt.xlabel('Step')
+    plt.plot(train_steps, train_values, label='Training Loss')
+    plt.plot(val_steps, val_values, label='Validation Loss')  # 新增验证损失曲线
+    plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title('Training Loss Curve')
+    plt.title('Training and Validation Loss Curve')  # 更新标题
     plt.legend()
     plt.grid(True)
     plt.savefig(os.path.join(log_dir, 'loss_curve.png'))  # 保存图像
