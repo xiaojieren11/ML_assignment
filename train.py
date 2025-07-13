@@ -14,11 +14,10 @@ from torch.utils.tensorboard import SummaryWriter
 from models.LSTM import LSTMModel 
 from models.Transformer import TransformerModel 
 from models.Ours import CNNTransformer 
-def load_data(TRAIN_DAYS, PREDICT_DAYS, WIDTH, TARGET_COLUMN, BATCH_SIZE, device):
+def load_data(PREDICT_DAYS, WIDTH, TARGET_COLUMN, BATCH_SIZE, device):
     # 数据加载
     train_df = pd.read_csv('./dataset/train_processed.csv', index_col='datetime', parse_dates=True)
-    test_df = pd.read_csv('./dataset/test_processed.csv', index_col='datetime', parse_dates=True)
-    train_df = train_df.tail(TRAIN_DAYS)  
+    test_df = pd.read_csv('./dataset/test_processed.csv', index_col='datetime', parse_dates=True) 
     test_df = test_df.head(PREDICT_DAYS)
     print(f"Train data shape: {train_df.shape}, Test data shape: {test_df.shape}")
 
@@ -80,16 +79,14 @@ def create_model(model_type, input_size, hidden_size, output_size, embed_dim, de
         model = TransformerModel(
             input_size,
             embed_dim, 
-            dense_dim, 
-            num_heads, 
-            output_size
+            num_heads
         )
     elif model_type == 'Ours':
         model = CNNTransformer(
             input_dim=input_size,  
-            model_dim=64,  
-            num_heads=4,  
-            num_layers=2,  
+            model_dim=128,  
+            num_heads=8,  
+            num_layers=6,  
             output_dim=output_size,  
         )
     else:
@@ -98,8 +95,9 @@ def create_model(model_type, input_size, hidden_size, output_size, embed_dim, de
 
 def model_train(model, train_loader, val_loader, EPOCHS, LEARNING_RATE, args, logger, writer):
     # 训练配置
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
+    criterion = nn.SmoothL1Loss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)  # 使用 AdamW 优化器
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)  # 添加学习率调度器
     model.train()
 
     start_time = datetime.datetime.now()
@@ -148,12 +146,16 @@ def model_train(model, train_loader, val_loader, EPOCHS, LEARNING_RATE, args, lo
                 val_loss += criterion(outputs, y_val).item() * X_val.size(0)
         val_loss /= len(val_loader.dataset)
         writer.add_scalar('Loss/val', val_loss, epoch)
+        
         # 保存最佳模型
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(model.state_dict(), best_model_path)
         
         model.train()
+        
+        # 更新学习率
+        scheduler.step()
 
     writer.close()
     model.load_state_dict(torch.load(best_model_path))
@@ -180,12 +182,10 @@ def main(args):
     # 超参数提取
     WIDTH = args.win_width
     TARGET_COLUMN = 'Global_active_power'
-    NUM_RUNS = 5
     EPOCHS = args.num_epochs
     LEARNING_RATE = args.learning_rate
     BATCH_SIZE = args.batch_size
     PREDICT_DAYS = args.predict_days
-    TRAIN_DAYS = args.train_days
 
     # 设备选取
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -200,7 +200,7 @@ def main(args):
     log_dir=os.path.join(output_dir, 'runs')
     writer = SummaryWriter(log_dir)
 
-    X_train, train_loader, val_loader, test_loader, target_scaler = load_data(TRAIN_DAYS, PREDICT_DAYS, WIDTH, TARGET_COLUMN, BATCH_SIZE, device)
+    X_train, train_loader, val_loader, test_loader, target_scaler = load_data(PREDICT_DAYS, WIDTH, TARGET_COLUMN, BATCH_SIZE, device)
 
     model = create_model(
             model_type=args.model,

@@ -31,7 +31,6 @@ def sliding_window(data, sequence_length, target_column_index):
         targets.append(data[i + sequence_length, target_column_index])
     return np.array(sequences), np.array(targets)
 
-
 def plot_res(actuals_rescaled, predictions_rescaled, args, output_dir):
     plt.clf()  # 清除之前的绘图状态
     plt.rcParams.update(plt.rcParamsDefault)
