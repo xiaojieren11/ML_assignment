@@ -70,8 +70,8 @@ def preprocess_data(file_path):
 
 if __name__ == "__main__":
     # 定义输入和输出文件路径
-    train_file = 'train.csv'
-    test_file = 'test.csv'
+    train_file = './dataset/train.csv'
+    test_file = './dataset/test.csv'
     output_train_file = 'train_processed.csv'
     output_test_file = 'test_processed.csv'
 
